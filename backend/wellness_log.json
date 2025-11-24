@@ -1,0 +1,29 @@
+[
+    {
+        "timestamp": "2025-11-24T15:51:06.270010",
+        "mood": "sad",
+        "energy": "2/10",
+        "objectives": [
+            "update resume"
+        ],
+        "summary": "Today, you're feeling sad with low energy, and your objective is to make a small start on updating your resume. Remember to break it down into tiny, manageable steps."
+    },
+    {
+        "timestamp": "2025-11-24T16:21:40.149240",
+        "mood": "a bit low",
+        "energy": "4/10",
+        "objectives": [
+            "Go for a walk"
+        ],
+        "summary": "It sounds like you're feeling a bit low with 4/10 energy, and your objective is to go for a 15-minute walk. Even a short stroll can make a difference!"
+    },
+    {
+        "timestamp": "2025-11-24T16:39:47.117796",
+        "mood": "a bit sad",
+        "energy": "3/10",
+        "objectives": [
+            "Go to the gym"
+        ],
+        "summary": "Today, your goal is to go to the gym, even if it's for a shorter workout, to help with feeling a bit sad and having 3/10 energy."
+    }
+]
