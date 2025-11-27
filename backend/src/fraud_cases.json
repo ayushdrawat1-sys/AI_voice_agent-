@@ -1,0 +1,17 @@
+[
+  {
+    "userName": "John Carter",
+    "securityIdentifier": "12345",
+    "cardEnding": "****4242",
+    "transactionAmount": "$129.95",
+    "transactionName": "ABC Industry",
+    "transactionTime": "2025-11-20T14:32:00Z",
+    "transactionCategory": "e-commerce",
+    "transactionSource": "alibaba.com",
+    "location": "New York, NY",
+    "securityQuestion": "What is the name of your first pet?",
+    "securityAnswer": "fluffy",
+    "status": "pending_review",
+    "outcome_note": ""
+  }
+]
