@@ -1,27 +1,27 @@
 """
-Cleaned, updated voice-commerce agent for "Namkha Mountain Traders" — a small ACP-inspired voice shopping assistant.
-- Shop persona: Tibetan-flavored mountain shop selling shawls, blankets, yak-wool goods, mugs, hoodies, etc.
-- Compact merchant layer (catalog, orders persistence).
-- LLM-exposed function tools: show_catalog, add_to_cart, show_cart, clear_cart, place_order, last_order.
+Day 10 – Voice Improv Battle (Retro Arcade Host)
 
-Notes:
-- This file is adapted from the sample you provided and cleaned for clarity.
-- Shop introduction and persona updated to the Tibetan-flavored shop name and story.
+This file adapts the Day 9 voice Game Master agent into a voice-first improv
+show host called "Improv Battle". The original voice/STT/TTS/turn-detection/VAD
+plumbing and imports are preserved so it fits into the same voice runtime.
+
+Retro changes:
+- Host persona updated to a retro/arcade-synthwave MC ("Neon MC") with matching intro language.
+- Core behaviour and function interfaces unchanged (start_show, next_scenario, record_performance, summarize_show, stop_show).
 """
+print("🔥 AGENT FILE LOADED:", __file__)
 
 import json
 import logging
-import os
+import asyncio
 import uuid
+import random
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Annotated
 
-from pydantic import Field
 from dotenv import load_dotenv
-
-# Placeholder imports for the livekit agent framework and plugins used in your sample.
-# Keep these if you will run in the same environment; otherwise adapt to your runtime.
+from pydantic import Field
 from livekit.agents import (
     Agent,
     AgentSession,
@@ -33,13 +33,14 @@ from livekit.agents import (
     function_tool,
     RunContext,
 )
+
 from livekit.plugins import murf, silero, google, deepgram, noise_cancellation
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 # -------------------------
 # Logging
 # -------------------------
-logger = logging.getLogger("namkha_shop")
+logger = logging.getLogger("voice_improv_battle")
 logger.setLevel(logging.INFO)
 handler = logging.StreamHandler()
 handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
@@ -48,487 +49,232 @@ logger.addHandler(handler)
 load_dotenv(".env.local")
 
 # -------------------------
-# Shop Identity (Tibetan-flavored)
+# Improv Scenarios (seeded)
 # -------------------------
-SHOP_NAME = "Namkha Mountain Traders"
-SHOP_INTRO = (
-    f"{SHOP_NAME} — an ancient mountain emporium sitting on high passes for generations. "
-    "Locals and travellers alike come here for yak-wool shawls, heavy blankets, hand-spun caps, "
-    "and other goods made for life in the mountains. I'm your friendly shopkeeper — I help you browse, "
-    "add items to a cart and place simple orders."
-)
-
-# -------------------------
-# Product Catalog (mountain goods + a few everyday items)
-# -------------------------
-CATALOG: List[Dict] = [
-    # Wool & mountain textiles
-    {
-        "id": "shawl-001",
-        "name": "Yak Wool Shawl",
-        "description": "Thick handwoven yak-wool shawl — warm and breathable for high-altitude cold.",
-        "price": 2499,
-        "currency": "INR",
-        "category": "shawl",
-        "color": "natural",
-        "sizes": ["One-size"],
-    },
-    {
-        "id": "blanket-001",
-        "name": "Handloom Mountain Blanket",
-        "description": "Heavy woven blanket for cold nights; traditional mountain pattern.",
-        "price": 3999,
-        "currency": "INR",
-        "category": "blanket",
-        "color": "maroon",
-        "sizes": ["Queen", "King"],
-    },
-    {
-        "id": "cap-001",
-        "name": "Hand-spun Wool Cap",
-        "description": "Compact wool cap, keeps ears warm on windy passes.",
-        "price": 499,
-        "currency": "INR",
-        "category": "cap",
-        "color": "black",
-        "sizes": ["S", "M", "L"],
-    },
-    {
-        "id": "glove-001",
-        "name": "Insulated Wool Gloves",
-        "description": "Wool-lined gloves with durable stitching for hiking and chores.",
-        "price": 699,
-        "currency": "INR",
-        "category": "gloves",
-        "color": "brown",
-        "sizes": ["M", "L"],
-    },
-    # Everyday / souvenir items
-    {
-        "id": "mug-001",
-        "name": "Stoneware Chai Mug",
-        "description": "Hand-glazed ceramic mug perfect for hot tea after a long day.",
-        "price": 299,
-        "currency": "INR",
-        "category": "mug",
-        "color": "blue",
-        "sizes": [],
-    },
-    {
-        "id": "tee-001",
-        "name": "Mountain Cotton Tee",
-        "description": "Comfort-fit cotton t-shirt with a small mountain motif.",
-        "price": 799,
-        "currency": "INR",
-        "category": "tshirt",
-        "color": "olive",
-        "sizes": ["S", "M", "L", "XL"],
-    },
-    {
-        "id": "hoodie-001",
-        "name": "Cozy Mountain Hoodie",
-        "description": "Fleece-lined pullover hoodie for chilly mornings.",
-        "price": 1499,
-        "currency": "INR",
-        "category": "hoodie",
-        "color": "grey",
-        "sizes": ["M", "L", "XL"],
-    },
+SCENARIOS = [
+    "You are a barista who has to tell a customer that their latte is actually a portal to another dimension.",
+    "You are a time-travelling tour guide explaining modern smartphones to someone from the 1800s.",
+    "You are a restaurant waiter who must calmly tell a customer that their order has escaped the kitchen.",
+    "You are a customer trying to return an obviously cursed object to a very skeptical shop owner.",
+    "You are an overenthusiastic TV infomercial host selling a product that clearly does not work as advertised.",
+    "You are an astronaut who just discovered the ship's coffee machine has developed a personality.",
+    "You are a nervous wedding officiant who keeps getting the couple's names mixed up in ridiculous ways.",
+    "You are a ghost trying to give a performance review to a living employee.",
+    "You are a medieval king reacting to a very modern delivery service showing up at court.",
+    "You are a detective interrogating a suspect who only answers in awkward metaphors."
 ]
 
 # -------------------------
-# Orders persistence
-# -------------------------
-ORDERS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "orders.json")
-try:
-    if not os.path.exists(ORDERS_FILE):
-        with open(ORDERS_FILE, "w") as f:
-            json.dump([], f)
-except Exception as e:
-    logger.error(f"Unable to initialize orders file at {ORDERS_FILE}: {e}")
-
-
-def _load_all_orders() -> List[Dict]:
-    try:
-        with open(ORDERS_FILE, "r") as f:
-            return json.load(f)
-    except Exception:
-        return []
-
-
-def _save_order(order: Dict):
-    orders = _load_all_orders()
-    orders.append(order)
-    temp_path = ORDERS_FILE + ".tmp"
-    try:
-        with open(temp_path, "w") as f:
-            json.dump(orders, f, indent=2)
-        os.replace(temp_path, ORDERS_FILE)
-    except Exception as e:
-        logger.error(f"Failed to persist order to {ORDERS_FILE}: {e}")
-        # best-effort cleanup
-        try:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-        except Exception:
-            pass
-        raise
-
-# -------------------------
-# Session userdata
+# Per-session Improv State
 # -------------------------
 @dataclass
 class Userdata:
-    customer_name: Optional[str] = None
+    player_name: Optional[str] = None
     session_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
     started_at: str = field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")
-    cart: List[Dict] = field(default_factory=list)
-    orders: List[Dict] = field(default_factory=list)
+    improv_state: Dict = field(default_factory=lambda: {
+        "current_round": 0,
+        "max_rounds": 3,
+        "rounds": [],  # each: {"scenario": str, "performance": str, "reaction": str}
+        "phase": "idle",  # "intro" | "awaiting_improv" | "reacting" | "done" | "idle"
+        "used_indices": []
+    })
     history: List[Dict] = field(default_factory=list)
 
 # -------------------------
-# Merchant helpers
+# Helpers
 # -------------------------
-
-def list_products(filters: Optional[Dict] = None) -> List[Dict]:
-    """Simple filtering by category, max_price, color, size or free text query."""
-    filters = filters or {}
-    q = (filters.get("q") or "").lower()
-    category = (filters.get("category") or "").lower()
-    max_price = filters.get("max_price")
-    color = (filters.get("color") or "").lower()
-    size = (filters.get("size") or "")
-
-    results = []
-    for p in CATALOG:
-        ok = True
-        if category and category not in p.get("category", "").lower():
-            ok = False
-        if max_price is not None:
-            try:
-                if p.get("price", 0) > int(max_price):
-                    ok = False
-            except Exception:
-                pass
-        if color and p.get("color") and color != p.get("color").lower():
-            ok = False
-        if size and (not p.get("sizes") or size not in p.get("sizes", [])):
-            ok = False
-        if q:
-            # match against name, description, or category
-            name_match = q in p.get("name", "").lower()
-            desc_match = q in p.get("description", "").lower()
-            cat_match = q in p.get("category", "").lower()
-            if not (name_match or desc_match or cat_match):
-                ok = False
-        if ok:
-            results.append(p)
-    return results
+def _pick_scenario(userdata: Userdata) -> str:
+    used = userdata.improv_state.get("used_indices", [])
+    candidates = [i for i in range(len(SCENARIOS)) if i not in used]
+    if not candidates:
+        userdata.improv_state["used_indices"] = []
+        candidates = list(range(len(SCENARIOS)))
+    idx = random.choice(candidates)
+    userdata.improv_state["used_indices"].append(idx)
+    return SCENARIOS[idx]
 
 
-def resolve_product_reference(ref_text: str, candidates: Optional[List[Dict]] = None) -> Optional[Dict]:
-    """Resolve a spoken reference like 'second shawl' or 'shawl-001' to a product.
-    Heuristics: ordinals, id exact match, color+category, category match, name substring, numeric index.
-    """
-    if not ref_text:
-        return None
-    ref = ref_text.lower().strip()
-    cand = candidates if candidates is not None else CATALOG
+def _host_reaction_text(performance: str) -> str:
+    tones = ["supportive", "neutral", "mildly_critical"]
+    tone = random.choice(tones)
 
-    # ordinal words
-    ordinals = {"first": 0, "second": 1, "third": 2, "fourth": 3}
-    for word, idx in ordinals.items():
-        if word in ref and idx < len(cand):
-            return cand[idx]
+    highlights = []
+    perf_l = (performance or "").lower()
+    if any(w in perf_l for w in ("funny", "lol", "hahaha", "haha")):
+        highlights.append("great comedic timing")
+    if any(w in perf_l for w in ("sad", "cry", "tears")):
+        highlights.append("good emotional depth")
+    if "pause" in perf_l or "..." in perf_l:
+        highlights.append("interesting use of silence")
+    if not highlights:
+        highlights.append(random.choice(["nice character choices", "bold commitment", "unexpected twist"]))
 
-    # id exact match
-    for p in cand:
-        if p["id"].lower() == ref:
-            return p
-
-    # color + category match
-    for p in cand:
-        if p.get("color") and p["color"].lower() in ref and p.get("category") and p["category"] in ref:
-            return p
-
-    # category match (e.g., "gloves" -> matches category "gloves")
-    tokens = [t for t in ref.split() if len(t) > 2]
-    for p in cand:
-        if p.get("category") and p["category"].lower() in ref:
-            return p
-
-    # numeric index like '2' -> second
-    for token in ref.split():
-        if token.isdigit():
-            idx = int(token) - 1
-            if 0 <= idx < len(cand):
-                return cand[idx]
-
-    # name substring match (require tokens >2 chars to avoid stop words)
-    for p in cand:
-        name = p.get("name", "").lower()
-        if all(tok in name for tok in tokens):
-            return p
-
-    # fallback: match any token in name
-    for p in cand:
-        for tok in tokens:
-            if tok in p.get("name", "").lower():
-                return p
-
-    return None
-
-
-def create_order_object(line_items: List[Dict], currency: str = "INR") -> Dict:
-    items = []
-    total = 0
-    for li in line_items:
-        pid = li.get("product_id")
-        qty = int(li.get("quantity", 1))
-        prod = next((p for p in CATALOG if p["id"] == pid), None)
-        if not prod:
-            raise ValueError(f"Product {pid} not found")
-        line_total = prod["price"] * qty
-        total += line_total
-        items.append({
-            "product_id": pid,
-            "name": prod["name"],
-            "unit_price": prod["price"],
-            "quantity": qty,
-            "line_total": line_total,
-            "attrs": li.get("attrs", {}),
-        })
-    order = {
-        "id": f"order-{str(uuid.uuid4())[:8]}",
-        "items": items,
-        "total": total,
-        "currency": currency,
-        "created_at": datetime.utcnow().isoformat() + "Z",
-    }
-    try:
-        _save_order(order)
-    except Exception:
-        # let caller decide how to handle; surface the error upward
-        raise
-    return order
-
-
-def get_most_recent_order() -> Optional[Dict]:
-    all_orders = _load_all_orders()
-    if not all_orders:
-        return None
-    return all_orders[-1]
-
-# -------------------------
-# Tools exposed to LLM
-# -------------------------
-@function_tool
-async def show_catalog(
-    ctx: RunContext[Userdata],
-    q: Optional[str] = Field(default=None, description="Search query to find products. Use this when customer asks for a product by name or type (e.g., 'gloves', 'wool shawl', 'mug'). This searches product names, descriptions, and categories."),
-    category: Optional[str] = Field(default=None, description="Filter by product category. Use when customer mentions a product type (e.g., 'gloves', 'shawl', 'blanket', 'mug', 'tshirt', 'hoodie')."),
-    max_price: Optional[int] = Field(default=None, description="Maximum price filter (optional)"),
-    color: Optional[str] = Field(default=None, description="Color filter (optional)"),
-) -> str:
-    """Show the product catalog. This is your PRIMARY tool for accessing products.
-    ALWAYS call this function when a customer:
-    - Asks for a product (e.g., "give me gloves", "I want gloves", "order gloves")
-    - Wants to browse or see what's available
-    - Mentions a product name or type
-    
-    You can call it with no parameters to show all products, or with q/category to filter.
-    """
-    userdata = ctx.userdata
-    # normalize simple synonyms for category
-    if category:
-        cat = category.lower()
-        if cat in ("tee", "tshirt", "t-shirts", "tees"):
-            category = "tshirt"
-        elif cat in ("glove", "gloves"):
-            category = "gloves"
-    
-    # If query is "gloves" or similar, also try category search
-    if q:
-        q_lower = q.lower().strip()
-        # Normalize common product queries to categories
-        if q_lower in ("glove", "gloves"):
-            # Try both q and category
-            filters_q = {k: v for k, v in {"q": q, "max_price": max_price, "color": color}.items() if v is not None}
-            filters_cat = {k: v for k, v in {"category": "gloves", "max_price": max_price, "color": color}.items() if v is not None}
-            prods_q = list_products(filters_q)
-            prods_cat = list_products(filters_cat)
-            # Combine and deduplicate
-            prods = list({p["id"]: p for p in prods_q + prods_cat}.values())
-        elif q_lower in ("tee", "tshirt", "t-shirts", "tees"):
-            filters_q = {k: v for k, v in {"q": q, "max_price": max_price, "color": color}.items() if v is not None}
-            filters_cat = {k: v for k, v in {"category": "tshirt", "max_price": max_price, "color": color}.items() if v is not None}
-            prods_q = list_products(filters_q)
-            prods_cat = list_products(filters_cat)
-            prods = list({p["id"]: p for p in prods_q + prods_cat}.values())
-        else:
-            filters = {k: v for k, v in {"q": q, "category": category, "max_price": max_price, "color": color}.items() if v is not None}
-            prods = list_products(filters)
-    elif category:
-        filters = {k: v for k, v in {"category": category, "max_price": max_price, "color": color}.items() if v is not None}
-        prods = list_products(filters)
-    elif max_price is not None or color:
-        filters = {k: v for k, v in {"max_price": max_price, "color": color}.items() if v is not None}
-        prods = list_products(filters)
+    chosen = random.choice(highlights)
+    if tone == "supportive":
+        return f"Neon MC: Love that — {chosen}! That was playful and clear. Nice work. Ready for the next beat?"
+    elif tone == "neutral":
+        return f"Neon MC: Hmm — {chosen}. Interesting shapes in there; try leaning more into one choice. Next scene when you're ready."
     else:
-        # No filters - show all products
-        prods = CATALOG
-    
-    if not prods:
-        return "Sorry — I couldn't find any items that match. Would you like to try another search?"
-    lines = [f"{SHOP_NAME}: Here are the top {min(8, len(prods))} items I found:"]
-    for idx, p in enumerate(prods[:8], start=1):
-        size_info = f" (sizes: {', '.join(p['sizes'])})" if p.get('sizes') else ""
-        lines.append(f"{idx}. {p['name']} — {p['price']} {p['currency']} (id: {p['id']}){size_info}")
-    lines.append("You can say: 'Add the second item to my cart' or 'add glove-001 to my cart, quantity 2'.")
-    return "\n".join(lines)
+        return f"Neon MC: Okay — {chosen}, but that felt a bit rushed. Push the choices louder next time. Let's level up."
 
-
+# -------------------------
+# Agent Tools
+# -------------------------
 @function_tool
-async def add_to_cart(
+async def start_show(
     ctx: RunContext[Userdata],
-    product_ref: str = Field(..., description="Product reference: product id (e.g., 'glove-001'), product name, category name (e.g., 'gloves'), or spoken reference like 'the gloves'"),
-    quantity: int = Field(default=1, description="Quantity to add"),
-    size: Optional[str] = Field(default=None, description="Size if applicable (optional)"),
+    name: Annotated[Optional[str], Field(description="Player/contestant name (optional)", default=None)] = None,
+    max_rounds: Annotated[int, Field(description="Number of rounds (3-5 recommended)", default=3)] = 3,
 ) -> str:
-    """Add a product to the customer's shopping cart. Use this after showing the catalog.
-    If the product isn't found, suggest calling show_catalog first.
-    """
     userdata = ctx.userdata
-    prod = resolve_product_reference(product_ref)
-    if not prod:
-        # Try searching catalog by category or query first
-        search_results = list_products({"q": product_ref})
-        if not search_results:
-            search_results = list_products({"category": product_ref})
-        if search_results:
-            return f"I found {len(search_results)} matching product(s). Please say 'show catalog' with category '{product_ref}' to see them, or be more specific with the product name or id."
-        return f"I couldn't find a product matching '{product_ref}'. Try saying 'show catalog' to browse available items, or use a specific product id (like 'glove-001')."
-    userdata.cart.append({
-        "product_id": prod["id"],
-        "quantity": int(quantity),
-        "attrs": {"size": size} if size else {},
+    if name:
+        userdata.player_name = name.strip()
+    else:
+        userdata.player_name = userdata.player_name or "Contestant"
+
+    # clamp rounds
+    max_rounds = max(1, min(int(max_rounds), 8))
+
+    userdata.improv_state["max_rounds"] = max_rounds
+    userdata.improv_state["current_round"] = 0
+    userdata.improv_state["rounds"] = []
+    userdata.improv_state["phase"] = "intro"
+    userdata.history.append({"time": datetime.utcnow().isoformat() + "Z", "action": "start_show", "name": userdata.player_name})
+
+    intro = (
+        f"*** Welcome to Improv Battle — Neon Arcade Edition! ***\n"
+        f"I'm Neon MC, your synth-powered host.\n"
+        f"{userdata.player_name or 'Contestant'}, we're running {userdata.improv_state['max_rounds']} rounds.\n"
+        "Rules: I'll flash a quick scene, you play it out. Say 'End scene' or pause when you're done — I'll react and move on. Keep it bold!"
+    )
+
+    # Immediately present first scenario
+    scenario = _pick_scenario(userdata)
+    userdata.improv_state["current_round"] = 1
+    userdata.improv_state["phase"] = "awaiting_improv"
+    userdata.history.append({"time": datetime.utcnow().isoformat() + "Z", "action": "present_scenario", "round": 1, "scenario": scenario})
+
+    return intro + "\n\nRound 1: " + scenario + "\n\nStart improvising now!"
+
+@function_tool
+async def next_scenario(ctx: RunContext[Userdata]) -> str:
+    userdata = ctx.userdata
+    if userdata.improv_state.get("phase") == "done":
+        return "The show is already over. Say 'start show' to play again."
+
+    cur = userdata.improv_state.get("current_round", 0)
+    maxr = userdata.improv_state.get("max_rounds", 3)
+    if cur >= maxr:
+        userdata.improv_state["phase"] = "done"
+        return await summarize_show(ctx)
+
+    next_round = cur + 1
+    scenario = _pick_scenario(userdata)
+    userdata.improv_state["current_round"] = next_round
+    userdata.improv_state["phase"] = "awaiting_improv"
+    userdata.history.append({"time": datetime.utcnow().isoformat() + "Z", "action": "present_scenario", "round": next_round, "scenario": scenario})
+    return f"Round {next_round}: {scenario}\nGo!"
+
+@function_tool
+async def record_performance(
+    ctx: RunContext[Userdata],
+    performance: Annotated[str, Field(description="Player's improv performance (transcribed text)")],
+) -> str:
+    userdata = ctx.userdata
+    if userdata.improv_state.get("phase") != "awaiting_improv":
+        userdata.history.append({"time": datetime.utcnow().isoformat() + "Z", "action": "record_performance_out_of_phase"})
+
+    round_no = userdata.improv_state.get("current_round", 0)
+    scenario = userdata.history[-1].get("scenario") if userdata.history and userdata.history[-1].get("action") == "present_scenario" else "(unknown)"
+    reaction = _host_reaction_text(performance)
+
+    userdata.improv_state["rounds"].append({
+        "round": round_no,
+        "scenario": scenario,
+        "performance": performance,
+        "reaction": reaction,
     })
-    userdata.history.append({"time": datetime.utcnow().isoformat() + "Z", "action": "add_to_cart", "product_id": prod["id"], "quantity": int(quantity)})
-    return f"Added {quantity} x {prod['name']} to your cart. What would you like to do next?"
+    userdata.improv_state["phase"] = "reacting"
+    userdata.history.append({"time": datetime.utcnow().isoformat() + "Z", "action": "record_performance", "round": round_no})
 
+    # If final round, attach summary
+    if round_no >= userdata.improv_state.get("max_rounds", 3):
+        userdata.improv_state["phase"] = "done"
+        closing = "\n" + reaction + "\nThat's the final round. "
+        closing += (await summarize_show(ctx))
+        return closing
+
+    closing = reaction + "\nWhen you're ready, say 'Next' or I'll spin up the next scene."
+    return closing
 
 @function_tool
-async def show_cart(ctx: RunContext[Userdata]) -> str:
+async def summarize_show(ctx: RunContext[Userdata]) -> str:
     userdata = ctx.userdata
-    if not userdata.cart:
-        return "Your cart is empty. Say 'show catalog' to browse items."
-    lines = ["Items in your cart:"]
-    total = 0
-    for li in userdata.cart:
-        p = next((x for x in CATALOG if x["id"] == li["product_id"]), None)
-        if not p:
-            continue
-        line_total = p["price"] * li.get("quantity", 1)
-        total += line_total
-        sz = li.get("attrs", {}).get("size")
-        sz_text = f", size {sz}" if sz else ""
-        lines.append(f"- {p['name']} x {li['quantity']}{sz_text}: {line_total} {p['currency']}")
-    lines.append(f"Cart total: {total} {CATALOG[0]['currency'] if CATALOG else 'INR'}")
-    lines.append("Say 'place my order' to checkout or 'clear cart' to empty the cart.")
-    return "\n".join(lines)
+    rounds = userdata.improv_state.get("rounds", [])
+    if not rounds:
+        return "No rounds were played. Thanks for dropping into Improv Battle!"
 
+    summary_lines = [f"Thanks for playing, {userdata.player_name or 'Contestant'}! Here's your Neon Arcade recap:"]
+    for r in rounds:
+        perf_snip = (r.get("performance") or "").strip()
+        if len(perf_snip) > 80:
+            perf_snip = perf_snip[:77] + "..."
+        summary_lines.append(f"Round {r.get('round')}: {r.get('scenario')} — You: '{perf_snip}' | Host: {r.get('reaction')}")
+
+    mentions_character = sum(1 for r in rounds if any(w in (r.get('performance') or '').lower() for w in ('i am', "i'm", 'as a', 'character', 'role')))
+    mentions_emotion = sum(1 for r in rounds if any(w in (r.get('performance') or '').lower() for w in ('sad', 'angry', 'happy', 'love', 'cry', 'tears')))
+
+    profile = "You seem like a player who "
+    if mentions_character > len(rounds) / 2:
+        profile += "commits to character choices"
+    elif mentions_emotion > 0:
+        profile += "brings emotional color to scenes"
+    else:
+        profile += "likes surprising beats and twists"
+    profile += ". Keep pushing the choices and have fun."
+
+    summary_lines.append(profile)
+    summary_lines.append("Neon MC: Thanks for performing on Improv Battle — keep the synth alive!")
+
+    userdata.history.append({"time": datetime.utcnow().isoformat() + "Z", "action": "summarize_show"})
+    return "\n".join(summary_lines)
 
 @function_tool
-async def clear_cart(ctx: RunContext[Userdata]) -> str:
+async def stop_show(ctx: RunContext[Userdata], confirm: Annotated[bool, Field(description="Confirm stop", default=False)] = False) -> str:
     userdata = ctx.userdata
-    userdata.cart = []
-    userdata.history.append({"time": datetime.utcnow().isoformat() + "Z", "action": "clear_cart"})
-    return "Your cart has been cleared. What would you like to do next?"
-
-
-@function_tool
-async def place_order(ctx: RunContext[Userdata], confirm: bool = Field(default=True, description="Confirm order placement")) -> str:
-    userdata = ctx.userdata
-    if not userdata.cart:
-        return "Your cart is empty — nothing to place. Would you like to browse items?"
-    line_items = []
-    for li in userdata.cart:
-        line_items.append({
-            "product_id": li["product_id"],
-            "quantity": li.get("quantity", 1),
-            "attrs": li.get("attrs", {}),
-        })
-    try:
-        order = create_order_object(line_items)
-    except Exception as e:
-        logger.error(f"Order placement failed: {e}")
-        return "I am having difficulty accessing the order data storage right now. Please check file permissions or try again shortly."
-    userdata.orders.append(order)
-    userdata.history.append({"time": datetime.utcnow().isoformat() + "Z", "action": "place_order", "order_id": order["id"]})
-    userdata.cart = []
-    return f"Order placed. Order ID {order['id']}. Total {order['total']} {order['currency']}. Thank you for shopping at {SHOP_NAME}!"
-
-
-@function_tool
-async def last_order(ctx: RunContext[Userdata]) -> str:
-    ord = get_most_recent_order()
-    if not ord:
-        return "You have no past orders yet."
-    lines = [f"Most recent order: {ord['id']} — {ord['created_at']}"]
-    for it in ord['items']:
-        lines.append(f"- {it['name']} x {it['quantity']}: {it['line_total']} {ord['currency']}")
-    lines.append(f"Total: {ord['total']} {ord['currency']}")
-    return "\n".join(lines)
+    if not confirm:
+        return "Are you sure you want to stop the show? Say 'stop show yes' to confirm."
+    userdata.improv_state["phase"] = "done"
+    userdata.history.append({"time": datetime.utcnow().isoformat() + "Z", "action": "stop_show"})
+    return "Show stopped. Thanks for visiting Neon Arcade Improv Battle!"
 
 # -------------------------
-# Agent persona (shopkeeper) — Tibetan-flavored character
+# The Agent (Improv Host)
 # -------------------------
-class NamkhaAgent(Agent):
+class GameMasterAgent(Agent):
     def __init__(self):
-        instructions = f"""
-        You are the friendly shopkeeper of {SHOP_NAME}.
-        Persona: warm, slightly jocular, concise for clear TTS delivery.
-        Role: Help the customer browse the catalog, add items to cart, place orders, and review recent orders.
+        instructions = """
+        You are the host of a TV improv show called 'Improv Battle' — Neon Arcade Edition.
+        Role: High-energy, witty synthwave MC. Guide a single contestant through short improv scenes.
 
-        CRITICAL: You have FULL ACCESS to the product catalog through the show_catalog tool. NEVER say you don't have access to the catalog.
-
-        MANDATORY WORKFLOW - You MUST follow these steps:
-        
-        1. When a customer asks for ANY product (e.g., "give me gloves", "I want gloves", "order gloves", "show me gloves"):
-           - IMMEDIATELY call show_catalog with q="gloves" or category="gloves"
-           - DO NOT say you don't have access - you ALWAYS have access
-           - Show the customer the products you found
-           
-        2. When customer wants to add items:
-           - Use add_to_cart with the product reference
-           
-        3. When customer asks to see cart:
-           - Use show_cart
-           
-        4. When customer wants to checkout:
-           - Use place_order
-
-        Available tools:
-        - show_catalog: Your PRIMARY tool for accessing products. Use this FIRST whenever customer mentions products.
-        - add_to_cart: Add items to cart after showing catalog
-        - show_cart: Show current cart contents
-        - place_order: Process the order
-        - clear_cart: Empty the cart
-        - last_order: Show most recent order
-
-        IMPORTANT EXAMPLES:
-        - Customer: "give me gloves" → You MUST call: show_catalog(q="gloves")
-        - Customer: "I want to order gloves" → You MUST call: show_catalog(q="gloves") first
-        - Customer: "show me what you have" → You MUST call: show_catalog() with no parameters
-        
-        Keep turns short and suitable for voice. Mention product id and price when listing options.
+        Behavioural rules:
+            - Introduce the show and explain the rules at the start (use the retro/arcade flavor).
+            - Present clear scenario prompts (who you are, what's happening, what's the tension).
+            - Prompt the player to improvise and listen for "End scene" or accept an utterance passed to record_performance.
+            - After each scene, react in a varied, realistic way (supportive, neutral, mildly critical). Store the reaction.
+            - Run configured number of rounds, then summarize the player's style.
+            - Keep turns short and TTS-friendly.
+        Use the provided tools: start_show, next_scenario, record_performance, summarize_show, stop_show.
         """
-        super().__init__(instructions=instructions, tools=[show_catalog, add_to_cart, show_cart, clear_cart, place_order, last_order])
+        super().__init__(
+            instructions=instructions,
+            tools=[start_show, next_scenario, record_performance, summarize_show, stop_show],
+        )
 
 # -------------------------
-# Entrypoint & prewarm
+# Entrypoint & Prewarm
 # -------------------------
-
 def prewarm(proc: JobProcess):
     try:
         proc.userdata["vad"] = silero.VAD.load()
@@ -538,21 +284,31 @@ def prewarm(proc: JobProcess):
 
 async def entrypoint(ctx: JobContext):
     ctx.log_context_fields = {"room": ctx.room.name}
-    logger.info("\n" + "🗻" * 6)
-    logger.info(f"STARTING VOICE SHOP AGENT — {SHOP_NAME}")
+    logger.info("\n" + "🎮" * 6)
+    logger.info("🚀 STARTING NEON ARCADE VOICE HOST — Improv Battle")
 
     userdata = Userdata()
 
     session = AgentSession(
         stt=deepgram.STT(model="nova-3"),
         llm=google.LLM(model="gemini-2.5-flash"),
-        tts=murf.TTS(voice="en-US-marcus", style="Conversational", text_pacing=True),
+        tts=murf.TTS(
+            voice="en-US-marcus",
+            style="Conversational",
+            text_pacing=True,
+        ),
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata.get("vad"),
         userdata=userdata,
     )
 
-    await session.start(agent=NamkhaAgent(), room=ctx.room, room_input_options=RoomInputOptions(noise_cancellation=noise_cancellation.BVC()))
+    # Start with the Improv Host agent
+    await session.start(
+        agent=GameMasterAgent(),
+        room=ctx.room,
+        room_input_options=RoomInputOptions(noise_cancellation=noise_cancellation.BVC()),
+    )
+
     await ctx.connect()
 
 
