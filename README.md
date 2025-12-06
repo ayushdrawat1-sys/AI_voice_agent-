@@ -99,7 +99,7 @@ cp .env.example .env.local
 uv run python src/agent.py download-files
 ```
 
-For LiveKit Cloud users, you can automatically populate credentials:
+For LiveKit Cloud users, you can automatically populate credentials: (_
 
 ```bash
 lk cloud auth
