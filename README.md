@@ -69,7 +69,7 @@ Make sure you have the following installed:
 - [LiveKit CLI](https://docs.livekit.io/home/cli/cli-setup) (optional but recommended)
 - [LiveKit Server](https://docs.livekit.io/home/self-hosting/local/) for local development
 
-### 1. Clone the Repository
+### 1. Clone the Repository ()
 
 ```bash
 git clone <your-repo-url>
