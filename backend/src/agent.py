@@ -1,8 +1,6 @@
 """
 Day 10 – Voice Improv Battle (Retro Arcade Host)
 final day
-
-
 Retro changes:
 - Host persona updated to a retro/arcade-synthwave MC ("Neon MC") with matching intro language.
 - Core behaviour and function interfaces unchanged (start_show, next_scenario, record_performance, summarize_show, stop_show).
