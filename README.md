@@ -9,7 +9,7 @@ We just launched **Murf Falcon** – the consistently fastest TTS API, and you'r
 
 **Build 10 AI Voice Agents over the course of 10 Days** along with help from our devs and the community champs, and win rewards!
 
-### How It Works
+### How it is working
 
 - One task to be provided everyday along with a GitHub repo for reference
 - Build a voice agent with specific personas and skills
