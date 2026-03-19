@@ -45,7 +45,7 @@ The backend is based on [LiveKit's agent-starter-python](https://github.com/live
 
 ### Frontend
 
-The frontend is based on [LiveKit's agent-starter-react](https://github.com/livekit-examples/agent-starter-react), providing a modern, beautiful UI for interacting with your voice agents.
+The frontend is based on [LiveKit's agent-starter-react](https://github.com/livekit-examples/agent-starter-react), providing a modern, beautiful UI for interacting with your  voice agents.
 
 **Features:**
 
