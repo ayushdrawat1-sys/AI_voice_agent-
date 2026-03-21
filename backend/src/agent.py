@@ -4,6 +4,7 @@ final day
 Retro changes:
 - Host persona updated to a retro/arcade-synthwave MC ("Neon MC") with matching intro language.
 - Core behaviour and function interfaces unchanged (start_show, next_scenario, record_performance, summarize_show, stop_show).
+- JSON export added: session data saved to ./sessions/<session_id>.json on summarize/stop.
 """
 print("🔥 AGENT FILE LOADED:", __file__)
 
@@ -12,6 +13,7 @@ import logging
 import asyncio
 import uuid
 import random
+import os                          # ← NEW
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Dict, Optional, Annotated
@@ -61,6 +63,45 @@ SCENARIOS = [
 ]
 
 # -------------------------
+# JSON Save Helper            ← NEW
+# -------------------------
+SESSIONS_DIR = "sessions"
+
+def _save_session_json(userdata: "Userdata") -> str:
+    """Serialize the full session to JSON and write to ./sessions/<session_id>.json.
+    Returns the file path on success, or an error string on failure."""
+    os.makedirs(SESSIONS_DIR, exist_ok=True)
+    filepath = os.path.join(SESSIONS_DIR, f"{userdata.session_id}.json")
+
+    payload = {
+        "session_id":   userdata.session_id,
+        "player_name":  userdata.player_name,
+        "started_at":   userdata.started_at,
+        "saved_at":     datetime.utcnow().isoformat() + "Z",
+        "improv_state": userdata.improv_state,
+        "rounds": [
+            {
+                "round":       r.get("round"),
+                "scenario":    r.get("scenario"),
+                "performance": r.get("performance"),
+                "reaction":    r.get("reaction"),
+            }
+            for r in userdata.improv_state.get("rounds", [])
+        ],
+        "history": userdata.history,
+    }
+
+    try:
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        logger.info(f"📄 Session saved → {filepath}")
+        return filepath
+    except Exception as e:
+        logger.error(f"Failed to save session JSON: {e}")
+        return f"(save failed: {e})"
+
+
+# -------------------------
 # Per-session Improv State
 # -------------------------
 @dataclass
@@ -71,8 +112,8 @@ class Userdata:
     improv_state: Dict = field(default_factory=lambda: {
         "current_round": 0,
         "max_rounds": 3,
-        "rounds": [],  # each: {"scenario": str, "performance": str, "reaction": str}
-        "phase": "idle",  # "intro" | "awaiting_improv" | "reacting" | "done" | "idle"
+        "rounds": [],
+        "phase": "idle",
         "used_indices": []
     })
     history: List[Dict] = field(default_factory=list)
@@ -129,7 +170,6 @@ async def start_show(
     else:
         userdata.player_name = userdata.player_name or "Contestant"
 
-    # clamp rounds
     max_rounds = max(1, min(int(max_rounds), 8))
 
     userdata.improv_state["max_rounds"] = max_rounds
@@ -145,7 +185,6 @@ async def start_show(
         "Rules: I'll flash a quick scene, you play it out. Say 'End scene' or pause when you're done — I'll react and move on. Keep it bold!"
     )
 
-    # Immediately present first scenario
     scenario = _pick_scenario(userdata)
     userdata.improv_state["current_round"] = 1
     userdata.improv_state["phase"] = "awaiting_improv"
@@ -194,7 +233,6 @@ async def record_performance(
     userdata.improv_state["phase"] = "reacting"
     userdata.history.append({"time": datetime.utcnow().isoformat() + "Z", "action": "record_performance", "round": round_no})
 
-    # If final round, attach summary
     if round_no >= userdata.improv_state.get("max_rounds", 3):
         userdata.improv_state["phase"] = "done"
         closing = "\n" + reaction + "\nThat's the final round. "
@@ -234,6 +272,12 @@ async def summarize_show(ctx: RunContext[Userdata]) -> str:
     summary_lines.append("Neon MC: Thanks for performing on Improv Battle — keep the synth alive!")
 
     userdata.history.append({"time": datetime.utcnow().isoformat() + "Z", "action": "summarize_show"})
+
+    # ── Save JSON ──────────────────────────────────────────────── ← NEW
+    filepath = _save_session_json(userdata)
+    summary_lines.append(f"(Session saved → {filepath})")
+    # ──────────────────────────────────────────────────────────────
+
     return "\n".join(summary_lines)
 
 @function_tool
@@ -243,7 +287,12 @@ async def stop_show(ctx: RunContext[Userdata], confirm: Annotated[bool, Field(de
         return "Are you sure you want to stop the show? Say 'stop show yes' to confirm."
     userdata.improv_state["phase"] = "done"
     userdata.history.append({"time": datetime.utcnow().isoformat() + "Z", "action": "stop_show"})
-    return "Show stopped. Thanks for visiting Neon Arcade Improv Battle!"
+
+    # ── Save JSON on early stop too ────────────────────────────── ← NEW
+    filepath = _save_session_json(userdata)
+    # ──────────────────────────────────────────────────────────────
+
+    return f"Show stopped. Thanks for visiting Neon Arcade Improv Battle! (Session saved → {filepath})"
 
 # -------------------------
 # The Agent (Improv Host)
@@ -298,7 +347,6 @@ async def entrypoint(ctx: JobContext):
         userdata=userdata,
     )
 
-    # Start with the Improv Host agent
     await session.start(
         agent=GameMasterAgent(),
         room=ctx.room,
