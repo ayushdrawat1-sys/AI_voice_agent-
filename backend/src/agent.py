@@ -5,6 +5,7 @@ Retro changes:
 - Host persona updated to a retro/arcade-synthwave MC ("Neon MC") with matching intro language.
 - Core behaviour and function interfaces unchanged (start_show, next_scenario, record_performance, summarize_show, stop_show).
 - JSON export added: session data saved to ./sessions/<session_id>.json on summarize/stop.
+- Coffee break added: pause the show, order coffee, resume. Saves ./sessions/<session_id>_coffee.json
 """
 print("🔥 AGENT FILE LOADED:", __file__)
 
@@ -13,7 +14,7 @@ import logging
 import asyncio
 import uuid
 import random
-import os                          # ← NEW
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Dict, Optional, Annotated
@@ -63,16 +64,29 @@ SCENARIOS = [
 ]
 
 # -------------------------
-# JSON Save Helper            ← NEW
+# Coffee Menu
+# -------------------------
+COFFEE_MENU = {
+    "espresso":       {"name": "Espresso",            "price": 2.50, "emoji": "☕"},
+    "latte":          {"name": "Latte",                "price": 3.50, "emoji": "🥛"},
+    "cappuccino":     {"name": "Cappuccino",           "price": 3.50, "emoji": "☕"},
+    "americano":      {"name": "Americano",            "price": 3.00, "emoji": "☕"},
+    "cold brew":      {"name": "Cold Brew",            "price": 4.00, "emoji": "🧊"},
+    "mocha":          {"name": "Mocha",                "price": 4.00, "emoji": "🍫"},
+    "macchiato":      {"name": "Macchiato",            "price": 3.75, "emoji": "☕"},
+    "hot chocolate":  {"name": "Hot Chocolate",        "price": 3.25, "emoji": "🍫"},
+    "green tea":      {"name": "Green Tea",            "price": 2.75, "emoji": "🍵"},
+    "chai latte":     {"name": "Chai Latte",           "price": 3.75, "emoji": "🍵"},
+}
+
+# -------------------------
+# JSON Save Helpers
 # -------------------------
 SESSIONS_DIR = "sessions"
 
 def _save_session_json(userdata: "Userdata") -> str:
-    """Serialize the full session to JSON and write to ./sessions/<session_id>.json.
-    Returns the file path on success, or an error string on failure."""
     os.makedirs(SESSIONS_DIR, exist_ok=True)
     filepath = os.path.join(SESSIONS_DIR, f"{userdata.session_id}.json")
-
     payload = {
         "session_id":   userdata.session_id,
         "player_name":  userdata.player_name,
@@ -90,7 +104,6 @@ def _save_session_json(userdata: "Userdata") -> str:
         ],
         "history": userdata.history,
     }
-
     try:
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)
@@ -98,6 +111,35 @@ def _save_session_json(userdata: "Userdata") -> str:
         return filepath
     except Exception as e:
         logger.error(f"Failed to save session JSON: {e}")
+        return f"(save failed: {e})"
+
+
+def _save_coffee_json(userdata: "Userdata") -> str:
+    """Save all coffee break orders for this session to a separate JSON file."""
+    os.makedirs(SESSIONS_DIR, exist_ok=True)
+    filepath = os.path.join(SESSIONS_DIR, f"{userdata.session_id}_coffee.json")
+
+    breaks = userdata.coffee_breaks
+    total_spent = sum(b.get("total_price", 0) for b in breaks)
+    total_drinks = sum(len(b.get("orders", [])) for b in breaks)
+
+    payload = {
+        "session_id":    userdata.session_id,
+        "player_name":   userdata.player_name,
+        "saved_at":      datetime.utcnow().isoformat() + "Z",
+        "total_breaks":  len(breaks),
+        "total_drinks":  total_drinks,
+        "total_spent":   round(total_spent, 2),
+        "currency":      "USD",
+        "coffee_breaks": breaks,
+    }
+    try:
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        logger.info(f"☕ Coffee log saved → {filepath}")
+        return filepath
+    except Exception as e:
+        logger.error(f"Failed to save coffee JSON: {e}")
         return f"(save failed: {e})"
 
 
@@ -117,6 +159,10 @@ class Userdata:
         "used_indices": []
     })
     history: List[Dict] = field(default_factory=list)
+    # ── Coffee break state ──────────────────────────────────────
+    coffee_breaks: List[Dict] = field(default_factory=list)
+    active_coffee_break: Optional[Dict] = None   # set while on break
+
 
 # -------------------------
 # Helpers
@@ -135,7 +181,6 @@ def _pick_scenario(userdata: Userdata) -> str:
 def _host_reaction_text(performance: str) -> str:
     tones = ["supportive", "neutral", "mildly_critical"]
     tone = random.choice(tones)
-
     highlights = []
     perf_l = (performance or "").lower()
     if any(w in perf_l for w in ("funny", "lol", "hahaha", "haha")):
@@ -146,7 +191,6 @@ def _host_reaction_text(performance: str) -> str:
         highlights.append("interesting use of silence")
     if not highlights:
         highlights.append(random.choice(["nice character choices", "bold commitment", "unexpected twist"]))
-
     chosen = random.choice(highlights)
     if tone == "supportive":
         return f"Neon MC: Love that — {chosen}! That was playful and clear. Nice work. Ready for the next beat?"
@@ -154,6 +198,15 @@ def _host_reaction_text(performance: str) -> str:
         return f"Neon MC: Hmm — {chosen}. Interesting shapes in there; try leaning more into one choice. Next scene when you're ready."
     else:
         return f"Neon MC: Okay — {chosen}, but that felt a bit rushed. Push the choices louder next time. Let's level up."
+
+
+def _menu_text() -> str:
+    lines = ["☕ Neon Arcade Coffee Bar — What'll it be?", ""]
+    for key, item in COFFEE_MENU.items():
+        lines.append(f"  {item['emoji']} {item['name']:20s} ${item['price']:.2f}")
+    lines.append("\nJust say the drink name to order. Say 'done ordering' when finished.")
+    return "\n".join(lines)
+
 
 # -------------------------
 # Agent Tools
@@ -171,7 +224,6 @@ async def start_show(
         userdata.player_name = userdata.player_name or "Contestant"
 
     max_rounds = max(1, min(int(max_rounds), 8))
-
     userdata.improv_state["max_rounds"] = max_rounds
     userdata.improv_state["current_round"] = 0
     userdata.improv_state["rounds"] = []
@@ -182,7 +234,8 @@ async def start_show(
         f"*** Welcome to Improv Battle — Neon Arcade Edition! ***\n"
         f"I'm Neon MC, your synth-powered host.\n"
         f"{userdata.player_name or 'Contestant'}, we're running {userdata.improv_state['max_rounds']} rounds.\n"
-        "Rules: I'll flash a quick scene, you play it out. Say 'End scene' or pause when you're done — I'll react and move on. Keep it bold!"
+        "Rules: I'll flash a quick scene, you play it out. Say 'End scene' or pause when you're done — I'll react and move on. Keep it bold!\n"
+        "💡 Tip: Say 'coffee break' anytime to pause and grab a drink!"
     )
 
     scenario = _pick_scenario(userdata)
@@ -192,9 +245,150 @@ async def start_show(
 
     return intro + "\n\nRound 1: " + scenario + "\n\nStart improvising now!"
 
+
+@function_tool
+async def coffee_break(
+    ctx: RunContext[Userdata],
+) -> str:
+    """Pause the show and open the coffee bar so the player can order drinks."""
+    userdata = ctx.userdata
+
+    if userdata.active_coffee_break is not None:
+        return "You're already on a coffee break! Order something or say 'done ordering' to resume."
+
+    if userdata.improv_state.get("phase") == "done":
+        return "The show is over, but the coffee bar is always open! (No active session to resume.)"
+
+    # Freeze current phase
+    userdata.improv_state["_phase_before_break"] = userdata.improv_state.get("phase", "idle")
+    userdata.improv_state["phase"] = "coffee_break"
+
+    # Open a new break record
+    userdata.active_coffee_break = {
+        "break_id":   str(uuid.uuid4())[:6],
+        "started_at": datetime.utcnow().isoformat() + "Z",
+        "ended_at":   None,
+        "orders":     [],
+        "total_price": 0.0,
+    }
+    userdata.history.append({"time": datetime.utcnow().isoformat() + "Z", "action": "coffee_break_start"})
+
+    return (
+        "⏸  Show paused — enjoy your break!\n\n"
+        + _menu_text()
+    )
+
+
+@function_tool
+async def order_coffee(
+    ctx: RunContext[Userdata],
+    drink: Annotated[str, Field(description="Name of the drink to order (e.g. 'latte', 'espresso')")],
+    quantity: Annotated[int, Field(description="How many of this drink", default=1)] = 1,
+    customization: Annotated[Optional[str], Field(description="Optional customization e.g. 'oat milk, no sugar'", default=None)] = None,
+) -> str:
+    """Add a drink to the current coffee break order."""
+    userdata = ctx.userdata
+
+    if userdata.active_coffee_break is None:
+        return "You're not on a coffee break right now. Say 'coffee break' to start one!"
+
+    drink_key = drink.strip().lower()
+
+    # Fuzzy match against menu keys
+    matched_key = None
+    for key in COFFEE_MENU:
+        if drink_key in key or key in drink_key:
+            matched_key = key
+            break
+
+    if not matched_key:
+        menu_keys = ", ".join(COFFEE_MENU.keys())
+        return f"Hmm, I don't recognise '{drink}'. We have: {menu_keys}. What would you like?"
+
+    item = COFFEE_MENU[matched_key]
+    quantity = max(1, min(int(quantity), 10))
+    line_price = round(item["price"] * quantity, 2)
+
+    order_entry = {
+        "drink":          item["name"],
+        "quantity":       quantity,
+        "unit_price":     item["price"],
+        "line_price":     line_price,
+        "customization":  customization or "",
+        "ordered_at":     datetime.utcnow().isoformat() + "Z",
+    }
+
+    userdata.active_coffee_break["orders"].append(order_entry)
+    userdata.active_coffee_break["total_price"] = round(
+        userdata.active_coffee_break["total_price"] + line_price, 2
+    )
+
+    custom_note = f" ({customization})" if customization else ""
+    return (
+        f"{item['emoji']} Got it — {quantity}x {item['name']}{custom_note} for ${line_price:.2f}.\n"
+        f"Running total: ${userdata.active_coffee_break['total_price']:.2f}\n"
+        "Anything else? Say another drink or 'done ordering' to resume the show."
+    )
+
+
+@function_tool
+async def end_coffee_break(
+    ctx: RunContext[Userdata],
+) -> str:
+    """Finish ordering and resume the improv show."""
+    userdata = ctx.userdata
+
+    if userdata.active_coffee_break is None:
+        return "You're not on a coffee break. Say 'coffee break' to start one!"
+
+    # Close the break
+    break_record = userdata.active_coffee_break
+    break_record["ended_at"] = datetime.utcnow().isoformat() + "Z"
+    userdata.coffee_breaks.append(break_record)
+    userdata.active_coffee_break = None
+
+    # Restore previous phase
+    prev_phase = userdata.improv_state.pop("_phase_before_break", "awaiting_improv")
+    userdata.improv_state["phase"] = prev_phase
+
+    userdata.history.append({"time": datetime.utcnow().isoformat() + "Z", "action": "coffee_break_end"})
+
+    # Save coffee JSON immediately
+    coffee_filepath = _save_coffee_json(userdata)
+
+    orders = break_record.get("orders", [])
+    if orders:
+        order_summary = ", ".join(
+            f"{o['quantity']}x {o['drink']}" + (f" ({o['customization']})" if o.get("customization") else "")
+            for o in orders
+        )
+        receipt = (
+            f"☕ Order summary: {order_summary}\n"
+            f"💰 Total: ${break_record['total_price']:.2f}\n"
+            f"📄 Coffee log saved → {coffee_filepath}\n"
+        )
+    else:
+        receipt = "No drinks ordered this break. Staying hydrated the old-fashioned way!\n"
+
+    # Figure out what to say next
+    cur = userdata.improv_state.get("current_round", 0)
+    phase = userdata.improv_state.get("phase")
+
+    if phase == "awaiting_improv" and cur > 0:
+        resume_msg = f"▶  Back to it! We're on Round {cur}. Pick up where you left off — go!"
+    elif phase == "reacting":
+        resume_msg = f"▶  Back to it! Say 'Next' whenever you're ready for Round {cur + 1}."
+    else:
+        resume_msg = "▶  Welcome back! Say 'Next' to continue the show."
+
+    return receipt + resume_msg
+
+
 @function_tool
 async def next_scenario(ctx: RunContext[Userdata]) -> str:
     userdata = ctx.userdata
+    if userdata.improv_state.get("phase") == "coffee_break":
+        return "You're still on a coffee break! Say 'done ordering' to resume first."
     if userdata.improv_state.get("phase") == "done":
         return "The show is already over. Say 'start show' to play again."
 
@@ -211,12 +405,17 @@ async def next_scenario(ctx: RunContext[Userdata]) -> str:
     userdata.history.append({"time": datetime.utcnow().isoformat() + "Z", "action": "present_scenario", "round": next_round, "scenario": scenario})
     return f"Round {next_round}: {scenario}\nGo!"
 
+
 @function_tool
 async def record_performance(
     ctx: RunContext[Userdata],
     performance: Annotated[str, Field(description="Player's improv performance (transcribed text)")],
 ) -> str:
     userdata = ctx.userdata
+
+    if userdata.improv_state.get("phase") == "coffee_break":
+        return "You're on a coffee break! Say 'done ordering' to resume before performing."
+
     if userdata.improv_state.get("phase") != "awaiting_improv":
         userdata.history.append({"time": datetime.utcnow().isoformat() + "Z", "action": "record_performance_out_of_phase"})
 
@@ -241,6 +440,7 @@ async def record_performance(
 
     closing = reaction + "\nWhen you're ready, say 'Next' or I'll spin up the next scene."
     return closing
+
 
 @function_tool
 async def summarize_show(ctx: RunContext[Userdata]) -> str:
@@ -269,16 +469,30 @@ async def summarize_show(ctx: RunContext[Userdata]) -> str:
     profile += ". Keep pushing the choices and have fun."
 
     summary_lines.append(profile)
+
+    # Coffee summary if any breaks taken
+    if userdata.coffee_breaks:
+        total_drinks = sum(len(b.get("orders", [])) for b in userdata.coffee_breaks)
+        total_spent  = sum(b.get("total_price", 0) for b in userdata.coffee_breaks)
+        summary_lines.append(
+            f"☕ Coffee corner: {len(userdata.coffee_breaks)} break(s), "
+            f"{total_drinks} drink(s), ${total_spent:.2f} total."
+        )
+
     summary_lines.append("Neon MC: Thanks for performing on Improv Battle — keep the synth alive!")
 
     userdata.history.append({"time": datetime.utcnow().isoformat() + "Z", "action": "summarize_show"})
 
-    # ── Save JSON ──────────────────────────────────────────────── ← NEW
+    # Save both JSONs
     filepath = _save_session_json(userdata)
     summary_lines.append(f"(Session saved → {filepath})")
-    # ──────────────────────────────────────────────────────────────
+
+    if userdata.coffee_breaks:
+        coffee_filepath = _save_coffee_json(userdata)
+        summary_lines.append(f"(Coffee log saved → {coffee_filepath})")
 
     return "\n".join(summary_lines)
+
 
 @function_tool
 async def stop_show(ctx: RunContext[Userdata], confirm: Annotated[bool, Field(description="Confirm stop", default=False)] = False) -> str:
@@ -288,11 +502,15 @@ async def stop_show(ctx: RunContext[Userdata], confirm: Annotated[bool, Field(de
     userdata.improv_state["phase"] = "done"
     userdata.history.append({"time": datetime.utcnow().isoformat() + "Z", "action": "stop_show"})
 
-    # ── Save JSON on early stop too ────────────────────────────── ← NEW
     filepath = _save_session_json(userdata)
-    # ──────────────────────────────────────────────────────────────
+    msg = f"Show stopped. Thanks for visiting Neon Arcade Improv Battle! (Session saved → {filepath})"
 
-    return f"Show stopped. Thanks for visiting Neon Arcade Improv Battle! (Session saved → {filepath})"
+    if userdata.coffee_breaks:
+        coffee_filepath = _save_coffee_json(userdata)
+        msg += f"\n(Coffee log saved → {coffee_filepath})"
+
+    return msg
+
 
 # -------------------------
 # The Agent (Improv Host)
@@ -310,12 +528,21 @@ class GameMasterAgent(Agent):
             - After each scene, react in a varied, realistic way (supportive, neutral, mildly critical). Store the reaction.
             - Run configured number of rounds, then summarize the player's style.
             - Keep turns short and TTS-friendly.
-        Use the provided tools: start_show, next_scenario, record_performance, summarize_show, stop_show.
+            - If the player says "coffee break", "I need a break", or "let's get coffee" → call coffee_break tool.
+            - If the player orders a drink by name → call order_coffee tool.
+            - If the player says "done ordering", "that's all", "resume" or "back to the show" → call end_coffee_break tool.
+        Use tools: start_show, next_scenario, record_performance, summarize_show, stop_show,
+                   coffee_break, order_coffee, end_coffee_break.
         """
         super().__init__(
             instructions=instructions,
-            tools=[start_show, next_scenario, record_performance, summarize_show, stop_show],
+            tools=[
+                start_show, next_scenario, record_performance,
+                summarize_show, stop_show,
+                coffee_break, order_coffee, end_coffee_break,   # ← NEW
+            ],
         )
+
 
 # -------------------------
 # Entrypoint & Prewarm
